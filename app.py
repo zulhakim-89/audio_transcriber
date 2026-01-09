@@ -25,7 +25,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for modern aesthetics
+#   
 st.markdown("""
 <style>
     /* Global styles */
