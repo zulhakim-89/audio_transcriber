@@ -65,7 +65,9 @@ def split_audio_file(input_path: Path, chunk_duration_seconds: int = 600) -> Lis
             "-i", str(input_path),
             "-ss", str(start_time),
             "-t", str(chunk_duration_seconds),
-            "-c", "copy",
+            "-acodec", "pcm_s16le",
+            "-ar", "16000",
+            "-ac", "1",
             str(chunk_path)
         ]
         
