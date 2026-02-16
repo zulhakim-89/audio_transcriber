@@ -6,7 +6,8 @@ Handles transcription with timestamps for multiple languages.
 from pathlib import Path
 from typing import List, Dict, Optional
 import math
-from openai import OpenAI
+import time
+from openai import OpenAI, APIStatusError
 
 
 class WhisperTranscriber:
@@ -65,7 +66,6 @@ class WhisperTranscriber:
         if file_size_mb > 20:
             print(f"⚠️ Large file: {file_size_mb:.1f}MB - upload may take several minutes...")
         
-        import time
         start_time = time.time()
         print(f"📤 [Start] Uploading {file_size_mb:.1f}MB to Whisper API at {time.strftime('%H:%M:%S')}...")
         
@@ -84,7 +84,12 @@ class WhisperTranscriber:
             if prompt:
                 api_params["prompt"] = prompt
             
-            response = self.client.audio.transcriptions.create(**api_params)
+            try:
+                response = self.client.audio.transcriptions.create(**api_params)
+            except APIStatusError as e:
+                print(f"❌ API Error {e.status_code}: {e.message}")
+                print(f"   File: {audio_path.name} ({file_size_mb:.1f}MB)")
+                raise
         
         elapsed = time.time() - start_time
         print(f"✅ [Complete] Transcription received from API in {elapsed:.1f}s")
@@ -164,8 +169,29 @@ class WhisperTranscriber:
             
             print(f"Transcribing chunk {i}/{len(chunk_paths)}: {chunk_path.name}")
             
-            # Transcribe this chunk
-            chunk_result = self.transcribe(chunk_path, language=language, prompt=prompt)
+            # Transcribe this chunk with retry logic for transient API errors
+            max_retries = 5
+            chunk_result = None
+            for attempt in range(1, max_retries + 1):
+                try:
+                    chunk_result = self.transcribe(chunk_path, language=language, prompt=prompt)
+                    break  # Success, exit retry loop
+                except APIStatusError as e:
+                    if e.status_code >= 500 and attempt < max_retries:
+                        wait_time = 2 ** attempt  # 2, 4, 8, 16, 32 seconds
+                        print(f"⚠️ Server error on chunk {i} (attempt {attempt}/{max_retries}). "
+                              f"Retrying in {wait_time}s...")
+                        if progress_callback:
+                            progress_callback(
+                                f"⚠️ API error on chunk {i}, retrying in {wait_time}s "
+                                f"(attempt {attempt}/{max_retries})..."
+                            )
+                        time.sleep(wait_time)
+                    else:
+                        raise  # Re-raise for non-500 errors or final attempt
+            
+            if chunk_result is None:
+                raise RuntimeError(f"Failed to transcribe chunk {i} after {max_retries} attempts")
             
             # Adjust timestamps with cumulative offset
             for seg in chunk_result['segments']:
