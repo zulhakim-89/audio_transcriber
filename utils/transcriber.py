@@ -75,8 +75,7 @@ class WhisperTranscriber:
             api_params = {
                 "model": "whisper-1",
                 "file": audio_file,
-                "response_format": "verbose_json",
-                "timestamp_granularities": ["segment"]
+                "response_format": "verbose_json"
             }
             
             # Add optional parameters
