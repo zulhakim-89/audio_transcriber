@@ -2,7 +2,6 @@
 
 A beautiful Streamlit application for transcribing audio and video files in 99+ languages using OpenAI's Whisper AI.
 
-![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.8%2B-blue)
 ![Streamlit](https://img.shields.io/badge/streamlit-1.28%2B-red)
 
@@ -14,8 +13,8 @@ A beautiful Streamlit application for transcribing audio and video files in 99+ 
 - ⏱️ **Timestamped Output**: Generate SRT subtitles with precise timestamps
 - 🎨 **Modern UI**: Beautiful glassmorphism design with dark theme
 - 💾 **Export Options**: Download as SRT, segmented TXT, or full text
-- ⚡ **Fast Processing**: Optimized audio preprocessing and API calls
-- 🔒 **Secure**: API keys stored securely in environment variables
+- ⚡ **Large File Support**: Automatic chunking for files > 25MB
+- 🎯 **Accuracy Verification**: Compare against ground truth text
 
 ## 🚀 Quick Start
 
@@ -33,27 +32,31 @@ A beautiful Streamlit application for transcribing audio and video files in 99+ 
    cd iptk_transcriber
    ```
 
-2. **Install dependencies**
+2. **Create virtual environment**
+   ```bash
+   python -m venv .venv
+   .venv\Scripts\activate    # Windows
+   source .venv/bin/activate  # Mac/Linux
+   ```
+
+3. **Install dependencies**
    ```bash
    pip install -r requirements.txt
    ```
 
-3. **Set up environment variables**
-   ```bash
-   cp .env.example .env
-   ```
+4. **Set up environment variables**
    
    Edit `.env` and add your OpenAI API key:
    ```
    OPENAI_API_KEY=your-api-key-here
    ```
 
-4. **Run the application**
+5. **Run the application**
    ```bash
    streamlit run app.py
    ```
 
-5. **Open your browser**
+6. **Open your browser**
    
    The app will automatically open at `http://localhost:8501`
 
@@ -64,38 +67,6 @@ A beautiful Streamlit application for transcribing audio and video files in 99+ 
 3. **Upload File**: Drag and drop or browse for an audio/video file
 4. **Transcribe**: Click "Start Transcription" and wait for processing
 5. **Download**: Get your transcripts in SRT, TXT, or full text format
-
-## 🌐 Deploy to Streamlit Cloud
-
-### Step-by-Step Deployment
-
-1. **Push to GitHub**
-   ```bash
-   git init
-   git add .
-   git commit -m "Initial commit"
-   git remote add origin <your-github-repo-url>
-   git push -u origin main
-   ```
-
-2. **Deploy on Streamlit Cloud**
-   - Go to [share.streamlit.io](https://share.streamlit.io)
-   - Click "New app"
-   - Connect your GitHub repository
-   - Select `app.py` as the main file
-   - Click "Deploy"
-
-3. **Add API Key Secret**
-   - In Streamlit Cloud dashboard, go to your app settings
-   - Click "Secrets"
-   - Add your OpenAI API key:
-     ```toml
-     OPENAI_API_KEY = "your-api-key-here"
-     ```
-
-4. **Share Your App**
-   - Your app will be live at `https://your-app-name.streamlit.app`
-   - Anyone with the URL can use it!
 
 ## 📁 Supported Formats
 
@@ -120,14 +91,9 @@ Use "Auto-detect" if you're not sure of the language!
 
 ### API Usage
 - Uses **Whisper API only** (no GPT-4 calls)
-- **One API call per file**
+- **One API call per file** (or one per chunk for large files)
 - Whisper pricing: ~$0.006 per minute of audio
 - Example: 10-minute audio ≈ $0.06
-
-### Tips to Minimize Costs
-- Use shorter audio clips for testing
-- Process files in batches when needed
-- Monitor your OpenAI usage dashboard
 
 ## 🛠️ Project Structure
 
@@ -136,13 +102,14 @@ iptk_transcriber/
 ├── app.py                      # Main Streamlit application
 ├── utils/
 │   ├── __init__.py
-│   ├── audio_processor.py      # Audio conversion & normalization
+│   ├── audio_processor.py      # Audio conversion & normalization (FFmpeg)
 │   ├── transcriber.py          # Whisper API integration
+│   ├── chunker.py              # Large file splitting for API limits
 │   └── exporter.py             # SRT/TXT export utilities
 ├── .streamlit/
 │   └── config.toml             # Streamlit theme configuration
 ├── requirements.txt            # Python dependencies
-├── .env.example                # Environment variables template
+├── .env                        # Environment variables (not committed)
 └── README.md                   # This file
 ```
 
@@ -163,7 +130,7 @@ Default settings in `utils/audio_processor.py`:
 ## ❓ Troubleshooting
 
 ### FFmpeg Not Found
-**Error**: `FileNotFoundError: [WinError 2] The system cannot find the file specified`
+**Error**: `FFmpeg is not installed or not found in PATH`
 
 **Solution**: Install FFmpeg:
 - **Windows**: Download from [ffmpeg.org](https://ffmpeg.org/download.html) and add to PATH
@@ -186,26 +153,11 @@ Default settings in `utils/audio_processor.py`:
 - Consider compressing audio before upload
 - Split very long recordings into segments
 
-## 🤝 Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-## 📄 License
-
-This project is licensed under the MIT License.
-
 ## 🙏 Acknowledgments
 
-- [OpenAI Whisper](https://openai.com/research/whisper) for the amazing transcription API
-- [Streamlit](https://streamlit.io/) for the awesome web framework
+- [OpenAI Whisper](https://openai.com/research/whisper) for the transcription API
+- [Streamlit](https://streamlit.io/) for the web framework
 - [FFmpeg](https://ffmpeg.org/) for audio/video processing
-
-## 📧 Support
-
-For issues or questions:
-- Open an issue on GitHub
-- Check the [Streamlit documentation](https://docs.streamlit.io/)
-- Review [OpenAI API docs](https://platform.openai.com/docs)
 
 ---
 

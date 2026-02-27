@@ -5,13 +5,13 @@ A Streamlit application for transcribing audio/video files in 99+ languages usin
 
 import streamlit as st
 import os
+import shutil
 import tempfile
 from pathlib import Path
 from dotenv import load_dotenv
 
 from utils.audio_processor import convert_to_wav, get_audio_duration, validate_audio_file
 from utils.transcriber import WhisperTranscriber, SUPPORTED_LANGUAGES
-from utils.exporter import export_srt, export_txt, export_full_text
 
 
 # Load environment variables
@@ -175,6 +175,21 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
+def check_ffmpeg():
+    """Check if FFmpeg is available on the system."""
+    import subprocess
+    try:
+        subprocess.run(
+            ["ffmpeg", "-version"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0
+        )
+        return True
+    except FileNotFoundError:
+        return False
+
+
 def main():
     """Main application function."""
     
@@ -186,29 +201,28 @@ def main():
     </div>
     """, unsafe_allow_html=True)
     
+    # Check FFmpeg availability
+    if not check_ffmpeg():
+        st.error("❌ **FFmpeg is not installed or not found in PATH.**")
+        st.info("""
+        FFmpeg is required for audio processing. Please install it:
+        - **Windows**: Download from [ffmpeg.org](https://ffmpeg.org/download.html) and add to PATH
+        - **Mac**: `brew install ffmpeg`
+        - **Linux**: `sudo apt-get install ffmpeg`
+        """)
+        return
+    
     # Sidebar
     with st.sidebar:
         st.header("⚙️ Settings")
         
-        # Model selection
-        model_choice = st.radio(
-            "Transcription Model",
-            options=["Whisper (OpenAI API)", "Seamless M4T (Local GPU)"],
-            index=0,
-            help="Whisper: Fast, requires API key. Seamless: Better for mixed languages, runs locally."
+        # API Key input
+        api_key = st.text_input(
+            "OpenAI API Key",
+            type="password",
+            value=os.getenv("OPENAI_API_KEY", ""),
+            help="Enter your OpenAI API key. Get one at https://platform.openai.com/api-keys"
         )
-        
-        # API Key input (only for Whisper)
-        if model_choice == "Whisper (OpenAI API)":
-            api_key = st.text_input(
-                "OpenAI API Key",
-                type="password",
-                value=os.getenv("OPENAI_API_KEY", ""),
-                help="Enter your OpenAI API key. Get one at https://platform.openai.com/api-keys"
-            )
-        else:
-            api_key = None
-            st.info("💻 Seamless M4T runs locally on your GPU. No API key needed.")
         
         # Language selection
         language_name = st.selectbox(
@@ -220,46 +234,13 @@ def main():
         
         # Advanced Settings
         with st.expander("⚙️ Advanced Settings"):
-            # Speaker diarization option
-            enable_diarization = st.checkbox(
-                "🎭 Enable Speaker Diarization",
-                value=False,
-                help="Identify different speakers (adds ~30-60s processing time)"
+            custom_prompt = st.text_area(
+                "Transcription Prompt (optional)",
+                value="",
+                height=100,
+                help="Guide the transcription style. For example: 'This is a multilingual conversation. Transcribe exactly what is spoken in the original languages.'"
             )
-            
-            if enable_diarization:
-                num_speakers = st.number_input(
-                    "Expected number of speakers",
-                    min_value=2,
-                    max_value=10,
-                    value=2,
-                    help="Leave at auto to detect automatically"
-                )
-                st.info("💡 Auto-detection works best for 2-4 speakers")
-            else:
-                num_speakers = None
-            
-            st.markdown("---")
-            
-            # Mixed Language Mode
-            enable_mixed_language = st.checkbox(
-                "🌐 Mixed Language Mode",
-                value=False,
-                help="Enable for audio with code-switching (e.g., Malay + English + Chinese)"
-            )
-            
-            # Default multilingual prompt
-            default_prompt = "This is a multilingual conversation with frequent code-switching between languages. Transcribe exactly what is spoken in the original languages. Do not translate. Preserve all language switches."
-            
-            if enable_mixed_language:
-                st.info("💡 Mixed language mode enabled.")
-                custom_prompt = st.text_area(
-                    "Transcription Prompt",
-                    value=default_prompt,
-                    height=100,
-                    help="Guide the transcription style. Customize if needed."
-                )
-            else:
+            if not custom_prompt.strip():
                 custom_prompt = None
         
         st.markdown("---")
@@ -281,13 +262,14 @@ def main():
         - Max file size: 200 MB
         - Longer files take more time
         - Clear audio = better results
-        - **Refresh page** between uploads if processing slows down
         """)
         
         st.markdown("---")
         
         # Add reset button
         if st.button("🔄 Clear Session", help="Reset the app if it's running slow"):
+            for key in list(st.session_state.keys()):
+                del st.session_state[key]
             st.cache_data.clear()
             st.cache_resource.clear()
             import gc
@@ -296,7 +278,7 @@ def main():
             st.rerun()
     
     # Main content
-    if model_choice == "Whisper (OpenAI API)" and not api_key:
+    if not api_key:
         st.warning("⚠️ Please enter your OpenAI API key in the sidebar to get started.")
         st.info("""
         **Don't have an API key?**  
@@ -316,6 +298,11 @@ def main():
     )
     
     if uploaded_file:
+        # Validate file format
+        if not validate_audio_file(Path(uploaded_file.name)):
+            st.error("❌ Unsupported file format. Please upload a supported audio or video file.")
+            return
+        
         # Display file info
         file_size_mb = uploaded_file.size / (1024 * 1024)
         
@@ -355,11 +342,15 @@ def main():
                 api_key, 
                 language_code, 
                 language_name,
-                model_choice=model_choice,
-                enable_diarization=enable_diarization,
-                num_speakers=num_speakers if enable_diarization else None,
                 prompt=custom_prompt
             )
+    
+    # Display previous results from session state
+    if 'transcription_result' in st.session_state:
+        display_results(
+            st.session_state['transcription_result'],
+            st.session_state.get('transcription_filename', 'transcript')
+        )
 
 
 def process_transcription(
@@ -367,9 +358,6 @@ def process_transcription(
     api_key: str, 
     language_code: str, 
     language_name: str,
-    model_choice: str = "Whisper (OpenAI API)",
-    enable_diarization: bool = False,
-    num_speakers: int = None,
     prompt: str = None
 ):
     """
@@ -377,25 +365,14 @@ def process_transcription(
     
     Args:
         uploaded_file: Streamlit uploaded file object
-        api_key: OpenAI API key (only for Whisper)
+        api_key: OpenAI API key
         language_code: Language code for transcription
         language_name: Human-readable language name
-        model_choice: Which transcription model to use
-        enable_diarization: Whether to perform speaker diarization
-        num_speakers: Expected number of speakers (None for auto-detect)
         prompt: Optional prompt to guide transcription style
     """
     # Force garbage collection to free memory from previous runs
     import gc
     gc.collect()
-    
-    # Get HuggingFace token if diarization is enabled
-    hf_token = None
-    if enable_diarization:
-        hf_token = os.getenv("HUGGINGFACE_TOKEN", "")
-        if not hf_token:
-            st.error("❌ HuggingFace token not found! Please add HUGGINGFACE_TOKEN to your .env file")
-            return
     
     try:
         with st.spinner("🔄 Processing your file..."):
@@ -422,15 +399,7 @@ def process_transcription(
                 # Step 2: Check file size and decide on chunking
                 file_size_mb = wav_file.stat().st_size / (1024 * 1024)
                 
-                # Use appropriate transcriber based on model choice
-                use_seamless = model_choice == "Seamless M4T (Local GPU)"
-                
-                if use_seamless:
-                    status_text.text("🤖 Loading Seamless M4T model (first time may take a few minutes)...")
-                    from utils.seamless_transcriber import SeamlessTranscriber
-                    transcriber = SeamlessTranscriber()
-                else:
-                    transcriber = WhisperTranscriber(api_key)
+                transcriber = WhisperTranscriber(api_key)
                 
                 # If file is over 15MB, use chunking
                 if file_size_mb > 15:
@@ -439,14 +408,13 @@ def process_transcription(
                     
                     from utils.chunker import split_audio_file
                     
-                    # Split into 8-minute chunks
-                    chunk_paths = split_audio_file(wav_file, chunk_duration_seconds=480)
+                    # Split into 5-minute chunks (default, outputs as MP3)
+                    chunk_paths = split_audio_file(wav_file)
                     
                     # Get duration of each chunk
                     chunk_durations = [get_audio_duration(chunk) for chunk in chunk_paths]
                     
-                    model_name = "Seamless M4T" if use_seamless else "Whisper"
-                    status_text.text(f"📝 Transcribing {len(chunk_paths)} chunks with {model_name}...")
+                    status_text.text(f"📝 Transcribing {len(chunk_paths)} chunks with Whisper...")
                     progress_bar.progress(40)
                     
                     def update_progress(msg):
@@ -462,15 +430,13 @@ def process_transcription(
                     )
                     
                     # Clean up chunks
-                    import shutil
                     if (wav_file.parent / "chunks").exists():
                         shutil.rmtree(wav_file.parent / "chunks")
                     
                     progress_bar.progress(80)
                 else:
                     # Small file - direct transcription
-                    model_name = "Seamless M4T" if use_seamless else "Whisper"
-                    status_text.text(f"🎯 Transcribing {file_size_mb:.1f}MB file with {model_name}...")
+                    status_text.text(f"🎯 Transcribing {file_size_mb:.1f}MB file with Whisper...")
                     progress_bar.progress(40)
                     
                     result = transcriber.transcribe(wav_file, language=language_code, prompt=prompt)
@@ -480,220 +446,202 @@ def process_transcription(
                 # Clean up transcriber
                 del transcriber
                 
-                # Step 3: Speaker Diarization (if enabled)
-                if enable_diarization:
-                    status_text.text("🎭 Identifying speakers...")
-                    progress_bar.progress(82)
-                    
-                    try:
-                        from utils.diarizer import SpeakerDiarizer, align_transcription_with_speakers, format_speaker_label
-                        
-                        diarizer = SpeakerDiarizer(hf_token)
-                        speaker_segments = diarizer.diarize(wav_file, num_speakers=num_speakers)
-                        
-                        # Align transcription with speaker labels
-                        result['segments'] = align_transcription_with_speakers(
-                            result['segments'],
-                            speaker_segments
-                        )
-                        
-                        # Format speaker labels
-                        for seg in result['segments']:
-                            if 'speaker' in seg:
-                                seg['speaker'] = format_speaker_label(seg['speaker'])
-                        
-                        del diarizer
-                        st.success(f"✅ Detected {len(set(seg.get('speaker', 'Unknown') for seg in result['segments']))} speakers!")
-                        
-                    except Exception as e:
-                        st.warning(f"⚠️ Diarization failed: {str(e)}. Continuing without speaker labels...")
-                        # Continue without diarization on error
-                    
-                    progress_bar.progress(85)
-                
-                # Step 4: Export files
-                status_text.text("💾 Generating output files...")
-                progress_bar.progress(90)
-                
-                # Export SRT
-                srt_file = temp_path / "transcript.srt"
-                export_srt(result['segments'], srt_file)
-                
-                # Export TXT
-                txt_file = temp_path / "transcript.txt"
-                export_txt(result['segments'], txt_file)
-                
-                # Export full text
-                full_txt_file = temp_path / "transcript_full.txt"
-                export_full_text(result['text'], full_txt_file)
+                # Add duration to result for display
+                result['duration'] = duration
                 
                 progress_bar.progress(100)
                 status_text.text("✅ Transcription complete!")
                 
-                # Display results
-                st.success("🎉 Transcription completed successfully!")
+                # Store results in session state so they persist across re-renders
+                st.session_state['transcription_result'] = result
+                st.session_state['transcription_filename'] = Path(uploaded_file.name).stem
                 
-                col1, col2, col3, col4 = st.columns(4)
-                with col1:
-                    st.markdown(f"""
-                    <div class="stat-box">
-                        <div class="stat-value">{duration:.1f}s</div>
-                        <div class="stat-label">Duration</div>
-                    </div>
-                    """, unsafe_allow_html=True)
-                
-                with col2:
-                    st.markdown(f"""
-                    <div class="stat-box">
-                        <div class="stat-value">{len(result['segments'])}</div>
-                        <div class="stat-label">Segments</div>
-                    </div>
-                    """, unsafe_allow_html=True)
-                
-                with col3:
-                    detected_lang = result.get('language', 'unknown').upper()
-                    st.markdown(f"""
-                    <div class="stat-box">
-                        <div class="stat-value">{detected_lang}</div>
-                        <div class="stat-label">Language</div>
-                    </div>
-                    """, unsafe_allow_html=True)
-                    
-                with col4:
-                    confidence = result.get('confidence', 0.0) * 100
-                    conf_color = "#10b981" if confidence > 90 else "#f59e0b" if confidence > 80 else "#ef4444"
-                    st.markdown(f"""
-                    <div class="stat-box" style="border-color: {conf_color};">
-                        <div class="stat-value" style="color: {conf_color};">{confidence:.1f}%</div>
-                        <div class="stat-label">Confidence</div>
-                    </div>
-                    """, unsafe_allow_html=True)
-                
-                # Tabbed Interface
-                tab_transcript, tab_segments, tab_verify = st.tabs([
-                    "📝 Transcript", 
-                    "📊 Segments & Analysis", 
-                    "🎯 Verify Accuracy"
-                ])
-                
-                # Tab 1: Transcript
-                with tab_transcript:
-                    st.markdown("### 📝 Full Transcript")
-                    st.text_area(
-                        "Transcript",
-                        value=result['text'],
-                        height=400,
-                        label_visibility="collapsed"
-                    )
-                    
-                    # Download buttons
-                    st.markdown("### 💾 Download Files")
-                    col1, col2, col3 = st.columns(3)
-                    
-                    with col1:
-                        st.download_button(
-                            label="📥 Download SRT",
-                            data=srt_file.read_bytes(),
-                            file_name=f"{Path(uploaded_file.name).stem}.srt",
-                            mime="text/plain",
-                            use_container_width=True
-                        )
-                    
-                    with col2:
-                        st.download_button(
-                            label="📥 Download TXT (Segmented)",
-                            data=txt_file.read_bytes(),
-                            file_name=f"{Path(uploaded_file.name).stem}.txt",
-                            mime="text/plain",
-                            use_container_width=True
-                        )
-                    
-                    with col3:
-                        st.download_button(
-                            label="📥 Download TXT (Full)",
-                            data=full_txt_file.read_bytes(),
-                            file_name=f"{Path(uploaded_file.name).stem}_full.txt",
-                            mime="text/plain",
-                            use_container_width=True
-                        )
-
-                # Tab 2: Segments
-                with tab_segments:
-                    st.markdown("### 📊 Detailed Segments")
-                    st.info("ℹ️ View confidence scores and timestamps for each segment.")
-                    
-                    # Format segments for dataframe
-                    import pandas as pd
-                    
-                    seg_data = []
-                    for seg in result['segments']:
-                        conf = seg.get('confidence', 0.0)
-                        row = {
-                            "Start": f"{seg['start']:.2f}s",
-                            "End": f"{seg['end']:.2f}s",
-                            "Text": seg['text'],
-                            "Confidence": f"{conf*100:.1f}%",
-                        }
-                        if 'speaker' in seg:
-                            row["Speaker"] = seg['speaker']
-                        seg_data.append(row)
-                    
-                    if seg_data:
-                        # Configure column configuration
-                        column_config = {
-                            "Text": st.column_config.TextColumn("Text", width="large"),
-                            "Confidence": st.column_config.TextColumn("Confidence", help="Model confidence score")
-                        }
-                        
-                        st.dataframe(
-                            pd.DataFrame(seg_data), 
-                            hide_index=True,
-                            column_config=column_config
-                        )
-
-                # Tab 3: Verification
-                with tab_verify:
-                    st.markdown("### 🎯 Verify Accuracy")
-                    st.info("ℹ️ Paste a correct reference text (ground truth) below to calculate the exact accuracy of the transcription.")
-                    
-                    ground_truth = st.text_area("Reference Text (Ground Truth)", height=300, help="Paste the correct transcript here to compare")
-                    
-                    if ground_truth and st.button("Calculate Accuracy", type="primary"):
-                        import difflib
-                        
-                        # Normalize texts (simple normalization)
-                        ref_text = ground_truth.strip()
-                        hyp_text = result['text'].strip()
-                        
-                        # Calculate similarity ratio
-                        matcher = difflib.SequenceMatcher(None, ref_text, hyp_text)
-                        ratio = matcher.ratio()
-                        accuracy_pct = ratio * 100
-                        
-                        # Display score
-                        score_color = "#10b981" if accuracy_pct > 90 else "#f59e0b" if accuracy_pct > 80 else "#ef4444"
-                        
-                        col_score, col_diff = st.columns([1, 2])
-                        
-                        with col_score:
-                             st.markdown(f"""
-                            <div style="padding: 1rem; border-radius: 0.5rem; background-color: rgba(30, 41, 59, 0.6); border: 2px solid {score_color}; text-align: center; margin: 1rem 0;">
-                                <h3 style="margin:0; color: #94a3b8; font-size: 1rem;">Accuracy Score</h3>
-                                <h1 style="margin:0; color: {score_color}; font-size: 3rem;">{accuracy_pct:.1f}%</h1>
-                            </div>
-                            """, unsafe_allow_html=True)
-                        
-                        with col_diff:
-                             # Diff view
-                            with st.expander("View Differences", expanded=True):
-                                # Generate diff
-                                d = difflib.Differ()
-                                diff = d.compare(ref_text.splitlines(), hyp_text.splitlines())
-                                st.markdown("```diff\n" + '\n'.join(diff) + "\n```")
+                # Rerun to display results from session state (avoids duplicate widget IDs)
+                st.rerun()
     
     except Exception as e:
         st.error(f"❌ Error during transcription: {str(e)}")
         st.exception(e)
+
+
+def display_results(result: dict, filename: str):
+    """
+    Display transcription results with tabs for transcript, segments, and verification.
+    
+    Args:
+        result: Transcription result dict
+        filename: Original filename stem for downloads
+    """
+    from utils.exporter import export_srt, export_txt, export_full_text
+    
+    duration = result.get('duration', 0.0)
+    
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.markdown(f"""
+        <div class="stat-box">
+            <div class="stat-value">{duration:.1f}s</div>
+            <div class="stat-label">Duration</div>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col2:
+        st.markdown(f"""
+        <div class="stat-box">
+            <div class="stat-value">{len(result['segments'])}</div>
+            <div class="stat-label">Segments</div>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col3:
+        detected_lang = result.get('language', 'unknown').upper()
+        st.markdown(f"""
+        <div class="stat-box">
+            <div class="stat-value">{detected_lang}</div>
+            <div class="stat-label">Language</div>
+        </div>
+        """, unsafe_allow_html=True)
+        
+    with col4:
+        confidence = result.get('confidence', 0.0) * 100
+        conf_color = "#10b981" if confidence > 90 else "#f59e0b" if confidence > 80 else "#ef4444"
+        st.markdown(f"""
+        <div class="stat-box" style="border-color: {conf_color};">
+            <div class="stat-value" style="color: {conf_color};">{confidence:.1f}%</div>
+            <div class="stat-label">Confidence</div>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    # Tabbed Interface
+    tab_transcript, tab_segments, tab_verify = st.tabs([
+        "📝 Transcript", 
+        "📊 Segments & Analysis", 
+        "🎯 Verify Accuracy"
+    ])
+    
+    # Tab 1: Transcript
+    with tab_transcript:
+        st.markdown("### 📝 Full Transcript")
+        st.text_area(
+            "Transcript",
+            value=result['text'],
+            height=400,
+            label_visibility="collapsed"
+        )
+        
+        # Generate export data in memory
+        import tempfile as _tmpfile
+        with _tmpfile.TemporaryDirectory() as _td:
+            _tp = Path(_td)
+            
+            srt_file = _tp / "transcript.srt"
+            export_srt(result['segments'], srt_file)
+            
+            txt_file = _tp / "transcript.txt"
+            export_txt(result['segments'], txt_file)
+            
+            full_txt_file = _tp / "transcript_full.txt"
+            export_full_text(result['text'], full_txt_file)
+            
+            # Download buttons
+            st.markdown("### 💾 Download Files")
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.download_button(
+                    label="📥 Download SRT",
+                    data=srt_file.read_bytes(),
+                    file_name=f"{filename}.srt",
+                    mime="text/plain",
+                    use_container_width=True
+                )
+            
+            with col2:
+                st.download_button(
+                    label="📥 Download TXT (Segmented)",
+                    data=txt_file.read_bytes(),
+                    file_name=f"{filename}.txt",
+                    mime="text/plain",
+                    use_container_width=True
+                )
+            
+            with col3:
+                st.download_button(
+                    label="📥 Download TXT (Full)",
+                    data=full_txt_file.read_bytes(),
+                    file_name=f"{filename}_full.txt",
+                    mime="text/plain",
+                    use_container_width=True
+                )
+
+    # Tab 2: Segments
+    with tab_segments:
+        st.markdown("### 📊 Detailed Segments")
+        st.info("ℹ️ View confidence scores and timestamps for each segment.")
+        
+        import pandas as pd
+        
+        seg_data = []
+        for seg in result['segments']:
+            conf = seg.get('confidence', 0.0)
+            row = {
+                "Start": f"{seg['start']:.2f}s",
+                "End": f"{seg['end']:.2f}s",
+                "Text": seg['text'],
+                "Confidence": f"{conf*100:.1f}%",
+            }
+            seg_data.append(row)
+        
+        if seg_data:
+            column_config = {
+                "Text": st.column_config.TextColumn("Text", width="large"),
+                "Confidence": st.column_config.TextColumn("Confidence", help="Model confidence score")
+            }
+            
+            st.dataframe(
+                pd.DataFrame(seg_data), 
+                hide_index=True,
+                column_config=column_config
+            )
+
+    # Tab 3: Verification
+    with tab_verify:
+        st.markdown("### 🎯 Verify Accuracy")
+        st.info("ℹ️ Paste a correct reference text (ground truth) below to calculate the exact accuracy of the transcription.")
+        
+        ground_truth = st.text_area("Reference Text (Ground Truth)", height=300, help="Paste the correct transcript here to compare")
+        
+        if ground_truth and st.button("Calculate Accuracy", type="primary"):
+            import difflib
+            
+            # Normalize texts
+            ref_text = ground_truth.strip()
+            hyp_text = result['text'].strip()
+            
+            # Calculate similarity ratio
+            matcher = difflib.SequenceMatcher(None, ref_text, hyp_text)
+            ratio = matcher.ratio()
+            accuracy_pct = ratio * 100
+            
+            # Display score
+            score_color = "#10b981" if accuracy_pct > 90 else "#f59e0b" if accuracy_pct > 80 else "#ef4444"
+            
+            col_score, col_diff = st.columns([1, 2])
+            
+            with col_score:
+                st.markdown(f"""
+                <div style="padding: 1rem; border-radius: 0.5rem; background-color: rgba(30, 41, 59, 0.6); border: 2px solid {score_color}; text-align: center; margin: 1rem 0;">
+                    <h3 style="margin:0; color: #94a3b8; font-size: 1rem;">Accuracy Score</h3>
+                    <h1 style="margin:0; color: {score_color}; font-size: 3rem;">{accuracy_pct:.1f}%</h1>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            with col_diff:
+                # Diff view
+                with st.expander("View Differences", expanded=True):
+                    d = difflib.Differ()
+                    diff = d.compare(ref_text.splitlines(), hyp_text.splitlines())
+                    st.markdown("```diff\n" + '\n'.join(diff) + "\n```")
 
 
 if __name__ == "__main__":
